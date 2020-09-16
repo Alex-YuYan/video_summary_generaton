@@ -6,5 +6,12 @@ The repo contains 2 files.
 1) training.ipynb
 2) testing.ipynb
 
+Please assign the path of training data set to the variable 'input_videos_folder' in training.py.The program will preprocess the data and 
+will generate model.
+
+Please assign the path of testing data set to the variable 'input_videos_folder' in testing.py and provide path of the model generated during training.The summary will be generated in a separate folder 'summary_videos'.
+
+For more details contact me:  anaghazac@gmail.com
+
 
 

@@ -15,8 +15,8 @@ For more details contact me:  anaghazac@gmail.com
 
 Reference Repo
 
-1) KaiyangZhou ,pytorch-vsumm-reinforce (2015), GitHub repository, https://github.com/KaiyangZhou/pytorch-vsumm-reinforce
-2) KaiyangZhou ,pytorch-vsumm-reinforce (2015), GitHub repository, https://github.com/KaiyangZhou/pytorch-vsumm-reinforce
+1) https://github.com/KaiyangZhou/pytorch-vsumm-reinforce
+2) https://github.com/TorRient/Video-Summarization-Pytorch
 
 Reference papers
 

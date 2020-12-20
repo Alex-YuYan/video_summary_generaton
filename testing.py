@@ -1,6 +1,5 @@
-
-
 import torch
+from collections import OrderedDict
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.optim import lr_scheduler
@@ -21,9 +20,8 @@ import time
 import datetime
 from tabulate import tabulate
 import glob
-
-input_videos_folder='videos/'#path of input video
-
+import peakutils
+input_videos_folder='test/'#path of input video
 class Model_Resnet(nn.Module):
     def __init__(self):
         #Building a sequential model based on pretrained Resnet152 .Then excluding last 2 modules to extract features.
@@ -46,7 +44,6 @@ class Model_Resnet(nn.Module):
         res_pool5 = self.pool5(res_conv5)
         res_pool5 = res_pool5.view(res_pool5.size(0), -1)
         return res_pool5
-
 class DSN(nn.Module):
     #lstm
     def __init__(self, in_dim=1024, hid_dim=256, num_layers=1, cell='lstm'):
@@ -57,7 +54,6 @@ class DSN(nn.Module):
         h, _ = self.rnn(x)
         p = F.sigmoid(self.fc(h))
         return p
-
 def calc_scatters(K):
     #calculating scatter matrix to find covariance
     n = K.shape[0]
@@ -72,6 +68,55 @@ def calc_scatters(K):
                 - (diagK2[1:].reshape((1,-1)) + diagK2[:-1].reshape((-1,1)) - K2[1:,:-1].T - K2[:-1,1:]) / ((j-i+1).astype(float) + (j==i-1).astype(float)))
     scatters[j<i]=0
     return scatters
+def convert_frame_to_grayscale(frame):
+    #converting frame to grayscale
+    grayframe = None
+    gray = None
+    if frame is not None:
+        cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        grayframe = cv2.resize(gray, None, fx=1, fy=1, interpolation=cv2.INTER_AREA)
+        gray = cv2.GaussianBlur(gray, (9, 9), 0.0)
+    return grayframe, gray
+def keyframeDetection(source):
+    #detecting keyframe
+    cap = cv2.VideoCapture(source)
+    length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  
+    lstfrm = []
+    lstdiffMag = []
+    timeSpans = []
+    images = []
+    full_color = []
+    lastFrame = None
+    Start_time = time.process_time()
+    for i in range(length):
+        ret, frame = cap.read()
+        grayframe, blur_gray = convert_frame_to_grayscale(frame)
+        frame_number = cap.get(cv2.CAP_PROP_POS_FRAMES) - 1
+        lstfrm.append(frame_number)
+        images.append(grayframe)
+        full_color.append(frame)
+        if frame_number == 0:
+            lastFrame = blur_gray
+        diff = cv2.subtract(blur_gray, lastFrame)
+        diffMag = cv2.countNonZero(diff)
+        lstdiffMag.append(diffMag)
+        stop_time = time.process_time()
+        time_Span = stop_time-Start_time
+        timeSpans.append(time_Span)
+        lastFrame = blur_gray
+    cap.release()
+    y = np.array(lstdiffMag)
+    base = peakutils.baseline(y, 2)
+    indices = peakutils.indexes(y-base, 0.9, min_dist=1)
+    key_frames=[]
+    for i in range(length): #wriring in text file
+        if i in indices:
+            key_frames.append(1) 
+        else:
+            key_frames.append(0)  
+    cv2.destroyAllWindows()
+    return key_frames
 
 def cpd_nonlin(K, ncp, lmin=1, lmax=100000, backtrack=True, verbose=True,out_scatters=None):
     #finding change points
@@ -173,8 +218,9 @@ class Encoder:
 
     def encoder(self):
         #adding contents to the .h5 file
-        os.mkdir('frames')
+        os.mkdir('fles/a')
         for video_idx, video_filename in enumerate(self.video_list):
+
             video_path = video_filename
             if os.path.isdir(self.video_path):
                 video_path = os.path.join(self.video_path, video_filename)
@@ -189,17 +235,13 @@ class Encoder:
             c=0
             count=0
             user_summary=[]
-            base_dir = 'frames/video'+f'{video_idx+1}'
+            base_dir = 'files/a/video'+f'{video_idx+1}'
             os.mkdir(base_dir)
             for frame_idx in tqdm(range(n_frames-1)):
                 success, frame = video_capture.read()
                 cv2.imwrite( base_dir+'/' + 'frame%d.jpg' % count, frame)     # save frame as JPEG file
                 count += 1
                 if success:
-                    if c==0:
-                        key_frame_id=0
-                        keyframe=frame
-                        c=c+1
                     frame_feat = self._extract_feature(frame)
                     if frame_idx % 1 == 0:
                         picks.append(frame_idx)
@@ -216,36 +258,28 @@ class Encoder:
                     break
             video_capture.release()
             change_points, n_frame_per_seg = self._get_change_points(video_feat, n_frames, fps)
-            for i in range(0,len(change_points)):
-                if key_frame_id>=change_points[i][0] and key_frame_id<=change_points[i][1]:
-                    intervel=change_points[i]
-            for i in tqdm(range(n_frames-1)):
-                if i>=intervel[0] and i<=intervel[1]:
-                    user_summary.append(1)
-                else:
-                    user_summary.append(0)
+            key_frames=keyframeDetection(self.video_list[video_idx])
+
             self.h5_file['video_{}'.format(video_idx+1)]['features'] = list(video_feat_for_train)#features of every 5th frame
             self.h5_file['video_{}'.format(video_idx+1)]['picks'] = np.array(list(picks)) # positions of subsampled frames in original video
             self.h5_file['video_{}'.format(video_idx+1)]['n_frames'] = n_frames# number of frames of video
             self.h5_file['video_{}'.format(video_idx+1)]['fps'] = fps #frames per second
             self.h5_file['video_{}'.format(video_idx+1)]['video_name'] = self.video_name #name of input video
             self.h5_file['video_{}'.format(video_idx+1)]['change_points'] = change_points # change points(indices of segments)
+         
             self.h5_file['video_{}'.format(video_idx+1)]['n_frame_per_seg'] = n_frame_per_seg #number of frames per segment
-            self.h5_file['video_{}'.format(video_idx+1)]['user_summary'] =np.array(list(user_summary)) # user summary
-            self.h5_file['video_{}'.format(video_idx+1)]['gtscore'] = np.array(list(user_summary)) #importance scores
-
-h5file_name='test_data_.h5' #path of .h5 file
+            self.h5_file['video_{}'.format(video_idx+1)]['user_summary'] =np.array(list(key_frames)) # user summary
+            self.h5_file['video_{}'.format(video_idx+1)]['gtscore'] = np.array(list(key_frames)) #importance scores
+h5file_name='files/0.h5' #path of .h5 file
 h5_gen = Encoder(input_videos_folder,h5file_name)
 h5_gen.encoder()
 h5_gen.h5_file.close()
 print("Encoder process complete!")
-
 def read_json(fpath):
     #reading from .json file
     with open(fpath, 'r') as f:
         obj = json.load(f)
     return obj
-
 def knapsack_dp(values,weights,n_items,capacity,return_all=False):
     #implementing knapsack
     table = np.zeros((n_items+1,capacity+1),dtype=np.float32)
@@ -271,8 +305,11 @@ def knapsack_dp(values,weights,n_items,capacity,return_all=False):
         max_val = table[n_items,capacity]
         return picks,max_val
     return picks
+import matplotlib.pyplot as plt
+import matplotlib.pyplot as pl
+from matplotlib.pyplot import figure
 
-def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.15, method='knapsack'):
+def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.5, method='knapsack'):
     #Generate video summary 
     n_segs = cps.shape[0]    
     frame_scores = np.zeros((n_frames), dtype=np.float32)
@@ -286,6 +323,7 @@ def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.15, met
             frame_scores[pos_left:pos_right] = 0
         else:
             frame_scores[pos_left:pos_right] = ypred[i]
+  
     seg_score = []
     for seg_idx in range(n_segs):
         start, end = int(cps[seg_idx,0]), int(cps[seg_idx,1]+1)
@@ -303,40 +341,60 @@ def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.15, met
         summary = np.concatenate((summary, tmp))
     summary = np.delete(summary, 0) 
     return summary
-
 def evaluate_summary(machine_summary, user_summary, eval_metric='avg'):
     #Compare machine summary with user summary
-    machine_summary = machine_summary.astype(np.float32)
-    user_summary = np.array([user_summary])
-    user_summary = user_summary.astype(np.float32)
-    n_users,n_frames = user_summary.shape
-    machine_summary[machine_summary > 0] = 1
-    user_summary[user_summary > 0] = 1
-    if len(machine_summary) > n_frames:
-        machine_summary = machine_summary[:n_frames]
-    elif len(machine_summary) < n_frames:
-        zero_padding = np.zeros((n_frames - len(machine_summary)))
-        machine_summary = np.concatenate([machine_summary, zero_padding])
-    f_scores = []
-    prec_arr = []
-    rec_arr = []
-    for user_idx in range(n_users):
-        gt_summary = user_summary[user_idx,:]
-        overlap_duration = (machine_summary * gt_summary).sum()
-        precision = overlap_duration / (machine_summary.sum() + 1e-8)
-        recall = overlap_duration / (gt_summary.sum() + 1e-8)
-        if precision == 0 and recall == 0:
-            f_score = 0.
+    final_f_score=0
+    tp=0
+    fp=0
+    fn=0
+    lp=[]
+    cp=[]
+    for i in range(0,len(key_frames)):
+        if i in kty:
+            lp.append(i)
+        elif len(lp)!=0:
+            cp.append(lp)
+            lp=[]
         else:
-            f_score = (2 * precision * recall) / (precision + recall)
-        f_scores.append(f_score)
-        prec_arr.append(precision)
-        rec_arr.append(recall)
-    final_f_score = np.mean(f_scores)
-    final_prec = np.mean(prec_arr)
-    final_rec = np.mean(rec_arr)   
-    return final_f_score, final_prec, final_rec
+            continue
+    fn=0
+    for i in cp:
+        ck=0
+        cs=0
+        for j in i:
+            if key_frames[j]==1:
+                ck=ck+1
+            if machine_summary[j]==1:
+                cs=cs+1
+        klo=ck-cs
+        if klo<0:
+            klo=klo*-1
+        fn=fn+klo
+    for i in range(0,len(machine_summary)):
+        for j in range(0,len(kty)):
+            if i==j:
+        
+                    
+                if machine_summary[i]==1 and kty[j]==1:
+                    tp=tp+1
+                if machine_summary[i]==1 and kty[j]==0:
+                    fp=fp+1
+    recall=tp/(tp+fn)
+    print('tp')
+    print(tp)
+    print('fp')
+    print(fp)
+    print('fn')
+    print(fn)
+    precision=tp/(tp+fp)
+    print('recall')
+    print(recall)
+    print('precision')
+    print(precision)
 
+    final_f_score=2*precision*recall/(precision+recall)
+
+    return (final_f_score)
 def evaluate(model, dataset, test_keys):
     # generating result
     print("==> Test")
@@ -358,8 +416,16 @@ def evaluate(model, dataset, test_keys):
             nfps = dataset[key]['n_frame_per_seg'][...].tolist()
             positions = dataset[key]['picks'][...]
             user_summary = dataset[key]['user_summary'][...]
-            machine_summary = generate_summary(probs, cps, num_frames, nfps, positions)
-            fm, _, _ = evaluate_summary(machine_summary, user_summary, eval_metric)
+            machine_summar= generate_summary(probs, cps, num_frames, nfps, positions)
+            if len(key_frames)!=len(machine_summar):
+                koppo=len(key_frames)-len(machine_summar)
+                v=[]
+                for i in machine_summar:
+                    v.append(i)
+                for i in range(0,koppo):
+                    v.append(0.0)
+                machine_summary=np.array(v)
+            fm= evaluate_summary(machine_summary, user_summary, eval_metric)
             fms.append(fm)
             table.append([key_idx+1, key, "{:.1%}".format(fm)]) 
             h5_res.create_group('video_{}'.format(key_idx+1))   
@@ -367,12 +433,12 @@ def evaluate(model, dataset, test_keys):
             h5_res['video_{}'.format(key_idx+1)]['machine_summary'] = machine_summary 
             h5_res['video_{}'.format(key_idx+1)]['gtscore'] = dataset[key]['gtscore'][...]
             h5_res['video_{}'.format(key_idx+1)]['fm'] = fm 
-            ldseg=np.array(os.listdir('frames/video'+f'{key_idx+1}'))
+            ldseg=np.array(os.listdir('files/a/video'+f'{key_idx+1}'))
             cnt=0
             count=0
             for i in machine_summary:
                 if i==1:
-                    os.rename('frames/video'+f'{key_idx+1}'+'/frame'+f'{cnt}'+'.jpg','frames/video'+f'{key_idx+1}'+'/sum_frame'+f'{count}'+'.jpg')
+                    os.rename('files/a/video'+f'{key_idx+1}'+'/frame'+f'{cnt}'+'.jpg','files/a/video'+f'{key_idx+1}'+'/sum_frame'+f'{count}'+'.jpg')
                     count=count+1
                 cnt=cnt+1
     print(tabulate(table))
@@ -381,7 +447,7 @@ def evaluate(model, dataset, test_keys):
     print("Average F-score {:.1%}".format(mean_fm))
     return mean_fm
 
-resultfile_name='test_result.h5'#result file name
+resultfile_name='files/r.h5'#result file name
 torch.manual_seed(1)
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 cudnn.benchmark = True
@@ -395,27 +461,27 @@ model = DSN(in_dim=2048, hid_dim=256, num_layers=1, cell='lstm')
 model.cuda()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-05, weight_decay=1e-05)
 scheduler = lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
-checkpoint = torch.load('model_epoch60.pth.tar')
+checkpoint = torch.load('files/model_epoch60.pth.tar')
 model.load_state_dict(checkpoint)
 evaluate(model, dataset, test_keys)
 
 def frm2video(frm_dir, summary,cc):
     a=0
     k=0
-    vid_writer = cv2.VideoWriter(osp.join('summary_videos/',str(cc)+'summary.mp4'),cv2.VideoWriter_fourcc(*'MP4V'),30,(640, 480),)
+    vid_writer = cv2.VideoWriter(osp.join('files/summary_video/',str(cc)+'summary.mp4'),cv2.VideoWriter_fourcc(*'MP4V'),30,(640, 780),)
     for idx, val in enumerate(summary):
         if val == 1:
             try:
                 image = cv2.imread(dir+'sum_frame'+str(a)+'.jpg', 1) 
                 a=a+1     
-                frm = cv2.resize(image, (640, 480))
+                frm = cv2.resize(image, (640, 780))
                 vid_writer.write(frm)
             except Exception as e:
                 continue
 dataset = h5py.File(h5file_name, 'r')
 keys = dataset.keys()
 test_keys=[]
-base_dir ='summary_videos'
+base_dir ='files/summary_video'
 os.mkdir(base_dir)
 for i in keys:
     test_keys.append(i)
@@ -423,7 +489,10 @@ h5_res = h5py.File(resultfile_name, 'r')
 cc=1
 for i in test_keys:
     summary = h5_res[i]['machine_summary'][...]  
-    dir='frames/video'+str(cc)+'/'  
+    
+    dir='files/a/video'+str(cc)+'/'  
     frm2video(dir, summary,cc)
     cc=cc+1
 h5_res.close()
+
+    

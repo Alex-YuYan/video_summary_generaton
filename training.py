@@ -1,5 +1,3 @@
-
-
 import torch.nn as nn
 from torchvision import transforms, models
 from torch.autograd import Variable
@@ -9,11 +7,9 @@ import math
 import cv2
 import numpy as np
 import h5py
-
 input_videos_folder='videos/'#path of input video
-h5file_name='training_dataset.h5' #path of .h5 file
-jsonfile_name='split' #path of .json file
-
+h5file_name='files/training_datasets.h5' #path of .h5 file
+jsonfile_name='files/split' #path of .json file
 class Model_Resnet(nn.Module):
     def __init__(self):
         #Building a sequential model based on pretrained Resnet152 .Then excluding last 2 modules to extract features.
@@ -80,7 +76,6 @@ def cpd_nonlin(K, ncp, lmin=1, lmax=100000, backtrack=True, verbose=True,out_sca
     scores = I[:, n].copy()
     scores[scores > 1e99] = np.inf
     return cps, scores
-
 def cpd_auto(K, ncp, vmax, desc_rate=1 ):
     #finding change points based on Kernal temporal segmentation method
     m = ncp
@@ -93,7 +88,7 @@ def cpd_auto(K, ncp, vmax, desc_rate=1 ):
     m_best = np.argmin(costs)
     (cps, scores2) = cpd_nonlin(K, m_best)
     return (cps, costs)
-
+  
 class Encoder:
     #encoder
     def __init__(self, video_path, save_path): 
@@ -164,6 +159,7 @@ class Encoder:
             n_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
             frame_list = []
             picks = []
+            print(video_filename)
             video_feat = None
             video_feat_for_train = None
             c=0
@@ -171,11 +167,8 @@ class Encoder:
             for frame_idx in tqdm(range(n_frames-1)):
                 success, frame = video_capture.read()
                 if success:
-                    if c==0:
-                        key_frame_id=0
-                        keyframe=frame
-                        c=c+1
                     frame_feat = self._extract_feature(frame)
+                    print(frame_feat)
                     if frame_idx % 1 == 0:
                         picks.append(frame_idx)
 
@@ -191,14 +184,6 @@ class Encoder:
                     break
             video_capture.release()
             change_points, n_frame_per_seg = self._get_change_points(video_feat, n_frames, fps)
-            for i in range(0,len(change_points)):
-                if key_frame_id>=change_points[i][0] and key_frame_id<=change_points[i][1]:
-                    intervel=change_points[i]
-            for i in tqdm(range(n_frames-1)):
-                if i>=intervel[0] and i<=intervel[1]:
-                    user_summary.append(1)
-                else:
-                    user_summary.append(0)
             self.h5_file['video_{}'.format(video_idx+1)]['features'] = list(video_feat_for_train)#features of every 5th frame
             self.h5_file['video_{}'.format(video_idx+1)]['picks'] = np.array(list(picks)) # positions of subsampled frames in original video
             self.h5_file['video_{}'.format(video_idx+1)]['n_frames'] = n_frames# number of frames of video
@@ -206,18 +191,12 @@ class Encoder:
             self.h5_file['video_{}'.format(video_idx+1)]['video_name'] = self.video_name #name of input video
             self.h5_file['video_{}'.format(video_idx+1)]['change_points'] = change_points # change points(indices of segments)
             self.h5_file['video_{}'.format(video_idx+1)]['n_frame_per_seg'] = n_frame_per_seg #number of frames per segment
-            self.h5_file['video_{}'.format(video_idx+1)]['user_summary'] =np.array(list(user_summary)) # user summary
-            self.h5_file['video_{}'.format(video_idx+1)]['gtscore'] = np.array(list(user_summary)) #importance scores
-
 #generating .h5 file
 
 h5_gen = Encoder(input_videos_folder,h5file_name)
 h5_gen.encoder()
 h5_gen.h5_file.close()
 print("Encoder process complete!")
-
-"""**SPLITTING**"""
-
 from __future__ import print_function
 import json
 import os
@@ -226,12 +205,10 @@ import h5py
 import math
 import numpy as np
 import sys
-
 def write_json(obj, fpath):
     #writing in json file
     with open(fpath, 'w') as f:
         json.dump(obj, f, indent=4, separators=(',', ': '))
-
 def splitting_random(keys, num_videos, num_train):
     #splitting dataset
     train_keys, test_keys = [], []
@@ -262,7 +239,6 @@ def create():
     save_path = os.path.join( save_name + '.json')
     write_json(splits, save_path)
     dataset.close()
-
 #splitting process
 dataset_path=h5file_name
 num_splits=5
@@ -270,8 +246,6 @@ train_percent=0.8
 save_name=jsonfile_name
 create()
 print("json file created")
-
-"""**TRAINING**"""
 
 from __future__ import print_function
 import os
@@ -289,7 +263,6 @@ import torch.backends.cudnn as cudnn
 from torch.optim import lr_scheduler
 from torch.distributions import Bernoulli
 from torch.nn import functional as F
-
 class DSN(nn.Module):
     #lstm
     def __init__(self, in_dim=1024, hid_dim=256, num_layers=1, cell='lstm'):
@@ -300,7 +273,6 @@ class DSN(nn.Module):
         h, _ = self.rnn(x)
         p = F.sigmoid(self.fc(h))
         return p
-
 def compute_reward(seq, actions, ignore_far_sim=True, temp_dist_thre=20, use_gpu=False):
     #Computing diversity reward and representativeness reward
     _seq = seq.detach()
@@ -333,13 +305,11 @@ def compute_reward(seq, actions, ignore_far_sim=True, temp_dist_thre=20, use_gpu
     reward_rep = torch.exp(-dist_mat.mean())
     reward = (reward_div + reward_rep) * 0.5
     return reward
-
 def read_json(fpath):
     #reading from .json file
     with open(fpath, 'r') as f:
         obj = json.load(f)
     return obj
-
 def knapsack_dp(values,weights,n_items,capacity,return_all=False):
     #implementing knapsack
     table = np.zeros((n_items+1,capacity+1),dtype=np.float32)
@@ -365,7 +335,6 @@ def knapsack_dp(values,weights,n_items,capacity,return_all=False):
         max_val = table[n_items,capacity]
         return picks,max_val
     return picks
-
 def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.15, method='knapsack'):
     #Generate video summary 
     n_segs = cps.shape[0]    
@@ -398,38 +367,6 @@ def generate_summary(ypred, cps, n_frames, nfps, positions, proportion=0.15, met
     summary = np.delete(summary, 0) 
     return summary
 
-def evaluate_summary(machine_summary, user_summary, eval_metric='avg'):
-    #Compare machine summary with user summary
-    machine_summary = machine_summary.astype(np.float32)
-    user_summary = np.array([user_summary])
-    user_summary = user_summary.astype(np.float32)
-    n_users,n_frames = user_summary.shape
-    machine_summary[machine_summary > 0] = 1
-    user_summary[user_summary > 0] = 1
-    if len(machine_summary) > n_frames:
-        machine_summary = machine_summary[:n_frames]
-    elif len(machine_summary) < n_frames:
-        zero_padding = np.zeros((n_frames - len(machine_summary)))
-        machine_summary = np.concatenate([machine_summary, zero_padding])
-    f_scores = []
-    prec_arr = []
-    rec_arr = []
-    for user_idx in range(n_users):
-        gt_summary = user_summary[user_idx,:]
-        overlap_duration = (machine_summary * gt_summary).sum()
-        precision = overlap_duration / (machine_summary.sum() + 1e-8)
-        recall = overlap_duration / (gt_summary.sum() + 1e-8)
-        if precision == 0 and recall == 0:
-            f_score = 0.
-        else:
-            f_score = (2 * precision * recall) / (precision + recall)
-        f_scores.append(f_score)
-        prec_arr.append(precision)
-        rec_arr.append(recall)
-    final_f_score = np.mean(f_scores)
-    final_prec = np.mean(prec_arr)
-    final_rec = np.mean(rec_arr)   
-    return final_f_score, final_prec, final_rec
 
 def evalt(model, dataset, test_keys, use_gpu): 
     #evaluate the model 
@@ -447,17 +384,12 @@ def evalt(model, dataset, test_keys, use_gpu):
             num_frames = dataset[key]['n_frames'][()]
             nfps = dataset[key]['n_frame_per_seg'][...].tolist()
             positions = dataset[key]['picks'][...]
-            user_summary = dataset[key]['user_summary'][...]      
+     
             machine_summary = generate_summary(probs, cps, num_frames, nfps, positions)     
-            fm, _, _ = evaluate_summary(machine_summary, user_summary, eval_metric)
-            fms.append(fm)       
-    mean_fm = np.mean(fms)
-    return mean_fm
 
 def save_checkpoint(state, fpath='checkpoint.pth.tar'):  
     #saving check points 
     torch.save(state, fpath)
-
 seed=1
 torch.manual_seed(seed)
 split=5
@@ -471,7 +403,7 @@ def decoder():
     torch.cuda.manual_seed_all(seed)
     dataset = h5py.File(h5file_name, 'r')
     num_videos = len(dataset.keys())
-    splits = read_json('split.json')
+    splits = read_json('files/split.json')
     split = splits[0]
     train_keys = split['train_keys']
     test_keys = split['test_keys']
@@ -510,13 +442,12 @@ def decoder():
             baselines[key] = 0.9 * baselines[key] + 0.1 * np.mean(epis_rewards) 
             reward_writers[key].append(np.mean(epis_rewards))
         epoch_reward = np.mean([reward_writers[key][epoch] for key in train_keys])
-    write_json(reward_writers, osp.join('', 'rewards.json'))
+    write_json(reward_writers, osp.join('', 'files/rewards.json'))
     evalt(model, dataset, test_keys, True)
     elapsed = round(time.time() - start_time)
     elapsed = str(datetime.timedelta(seconds=elapsed))
     model_state_dict = model.module.state_dict() 
-    model_save_path = osp.join('model_epoch' + str(60) + '.pth.tar')
+    model_save_path = osp.join('files/model_epoch' + str(60) + '.pth.tar')
     save_checkpoint(model_state_dict, model_save_path)
     dataset.close()
-
-decoder()
+decoder()    
